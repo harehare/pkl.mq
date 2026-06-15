@@ -1,0 +1,428 @@
+# PKL Implementation in mq
+# https://pkl-lang.org/
+
+# === Internal helpers ===
+
+def _pkl_ch(src, i):
+  if (i >= len(src)): "" else: src[i]
+end
+
+def _pkl_is_digit(ch):
+  ch >= "0" && ch <= "9"
+end
+
+def _pkl_is_ident_start(ch):
+  is_regex_match(ch, "^[a-zA-Z_]$")
+end
+
+def _pkl_is_ident_char(ch):
+  is_regex_match(ch, "^[a-zA-Z0-9_]$")
+end
+
+def _pkl_is_ws(ch):
+  ch == " " || ch == "\t" || ch == "\r" || ch == "\n"
+end
+
+def _pkl_escape_string(s):
+  replace(s, "\\", "\\\\")
+  | replace("\"", "\\\"")
+  | replace("\n", "\\n")
+  | replace("\t", "\\t")
+end
+
+# === Comment stripping ===
+# Removes // line comments and /* */ block comments, preserving string literals.
+
+def _pkl_strip_comments(src):
+  var result = ""
+  | var i = 0
+  | let _ = while (i < len(src)):
+      let ch = _pkl_ch(src, i)
+      | let ch2 = _pkl_ch(src, i + 1)
+      | if (ch == "/" && ch2 == "/"):
+          do
+            i += 2
+            | let _ = while (i < len(src) && src[i] != "\n"): i += 1 end
+            | result
+          end
+        elif (ch == "/" && ch2 == "*"):
+          do
+            i += 2
+            | let _ = while (i + 1 < len(src) && !(src[i] == "*" && src[i + 1] == "/")): i += 1 end
+            | i += 2
+            | result
+          end
+        elif (ch == "\"" && ch2 == "\"" && _pkl_ch(src, i + 2) == "\""):
+          do
+            result += "\"\"\""
+            | i += 3
+            | let _ = while (i + 2 < len(src) && !(src[i] == "\"" && src[i + 1] == "\"" && src[i + 2] == "\"")):
+                result += src[i]
+                | i += 1
+                | result
+              end
+            | result += "\"\"\""
+            | i += 3
+            | result
+          end
+        elif (ch == "\""):
+          do
+            result += ch
+            | i += 1
+            | let _ = while (i < len(src) && src[i] != "\""):
+                if (src[i] == "\\" && i + 1 < len(src)):
+                  do result += src[i] | result += src[i + 1] | i += 2 | result end
+                else:
+                  do result += src[i] | i += 1 | result end
+                | result
+              end
+            | if (i < len(src)): do result += "\"" | i += 1 end
+            | result
+          end
+        else:
+          do result += ch | i += 1 | result end
+    end
+  | result
+end
+
+# === Tokenizer ===
+# Token shapes:
+#   {type: "STRING", value: "..."}
+#   {type: "NUMBER", value: 42}
+#   {type: "BOOL",   value: true|false}
+#   {type: "NULL",   value: None}
+#   {type: "IDENT",  value: "identifier"}
+#   {type: "OP",     value: "="|"{"|"}"|"("|")"|"["|"]"|","|":"}
+
+def _pkl_tokenize(src):
+  var tokens = []
+  | var i = 0
+  | let _ = while (i < len(src)):
+      let ch = _pkl_ch(src, i)
+      | let ch2 = _pkl_ch(src, i + 1)
+      | if (_pkl_is_ws(ch)):
+          do i += 1 | tokens end
+        elif (ch == "\"" && ch2 == "\"" && _pkl_ch(src, i + 2) == "\""):
+          do
+            var s = ""
+            | i += 3
+            | let _ = while (i + 2 < len(src) && !(src[i] == "\"" && src[i + 1] == "\"" && src[i + 2] == "\"")):
+                s += src[i] | i += 1 | s
+              end
+            | tokens += [{type: "STRING", value: trim(s)}]
+            | i += 3
+            | tokens
+          end
+        elif (ch == "\""):
+          do
+            var s = ""
+            | i += 1
+            | let _ = while (i < len(src) && src[i] != "\""):
+                if (src[i] == "\\" && i + 1 < len(src)):
+                  do
+                    let esc = src[i + 1]
+                    | s += if (esc == "n"): "\n"
+                            elif (esc == "t"): "\t"
+                            elif (esc == "r"): "\r"
+                            elif (esc == "\\"): "\\"
+                            elif (esc == "\""): "\""
+                            else: esc
+                    | i += 2
+                    | s
+                  end
+                else:
+                  do s += src[i] | i += 1 | s end
+                | s
+              end
+            | tokens += [{type: "STRING", value: s}]
+            | i += 1
+            | tokens
+          end
+        elif (_pkl_is_digit(ch) || (ch == "-" && _pkl_is_digit(ch2))):
+          do
+            var num = ch
+            | i += 1
+            | let _ = while (i < len(src) && (_pkl_is_digit(src[i]) || (src[i] == "." && _pkl_is_digit(_pkl_ch(src, i + 1))))):
+                num += src[i] | i += 1 | num
+              end
+            | tokens += [{type: "NUMBER", value: to_number(num)}]
+            | tokens
+          end
+        elif (_pkl_is_ident_start(ch)):
+          do
+            var ident = ch
+            | i += 1
+            | let _ = while (i < len(src) && _pkl_is_ident_char(src[i])):
+                ident += src[i] | i += 1 | ident
+              end
+            | let tok = if (ident == "true"): {type: "BOOL", value: true}
+                        elif (ident == "false"): {type: "BOOL", value: false}
+                        elif (ident == "null"): {type: "NULL", value: None}
+                        else: {type: "IDENT", value: ident}
+            | tokens += [tok]
+            | tokens
+          end
+        elif (ch == "=" || ch == "{" || ch == "}" || ch == "(" || ch == ")" || ch == "[" || ch == "]" || ch == "," || ch == ":"):
+          do tokens += [{type: "OP", value: ch}] | i += 1 | tokens end
+        else:
+          do i += 1 | tokens end
+    end
+  | tokens
+end
+
+# === Parser (returns [new_pos, value]) ===
+
+# Parses List/Set items: val, val, ... until )
+def _pkl_parse_list_tok(tokens, i):
+  var items = []
+  | var pos = i
+  | var done = false
+  | let _ = while (!done):
+      let tok = if (pos < len(tokens)): tokens[pos] else: {type: "EOF", value: ""}
+      | if (tok["type"] == "EOF" || tok["value"] == ")"):
+          do done = true | items end
+        elif (tok["value"] == ","):
+          do pos += 1 | items end
+        else:
+          do
+            let r = _pkl_parse_value_tok(tokens, pos)
+            | items += [r[1]]
+            | pos = r[0]
+            | items
+          end
+    end
+  | [if (pos < len(tokens) && tokens[pos]["value"] == ")"): pos + 1 else: pos, items]
+end
+
+# Parses Mapping entries: ["k"] = v ... until }
+def _pkl_parse_mapping_tok(tokens, i):
+  var m = {}
+  | var pos = i
+  | var done = false
+  | let _ = while (!done):
+      let tok = if (pos < len(tokens)): tokens[pos] else: {type: "EOF", value: ""}
+      | if (tok["type"] == "EOF" || tok["value"] == "}"):
+          do done = true | m end
+        elif (tok["value"] == "["):
+          do
+            pos += 1
+            | let kr = _pkl_parse_value_tok(tokens, pos)
+            | pos = kr[0]
+            | if (pos < len(tokens) && tokens[pos]["value"] == "]"): pos += 1
+            | if (pos < len(tokens) && tokens[pos]["value"] == "="): pos += 1
+            | let vr = _pkl_parse_value_tok(tokens, pos)
+            | m = set(m, to_string(kr[1]), vr[1])
+            | pos = vr[0]
+            | m
+          end
+        else:
+          do pos += 1 | m end
+    end
+  | [if (pos < len(tokens) && tokens[pos]["value"] == "}"): pos + 1 else: pos, m]
+end
+
+# Parses a single value at token position i.
+def _pkl_parse_value_tok(tokens, i):
+  let tok = if (i < len(tokens)): tokens[i] else: {type: "EOF", value: ""}
+  | if (tok["type"] == "STRING" || tok["type"] == "BOOL" || tok["type"] == "NULL"):
+      [i + 1, tok["value"]]
+    elif (tok["type"] == "NUMBER"):
+      [i + 1, tok["value"]]
+    elif (tok["type"] == "IDENT"):
+      do
+        let v = tok["value"]
+        | if (v == "List" || v == "Set"):
+            do
+              let j = i + 1
+              | if (j < len(tokens) && tokens[j]["value"] == "("):
+                  _pkl_parse_list_tok(tokens, j + 1)
+                else:
+                  [j, []]
+            end
+          elif (v == "Mapping"):
+            do
+              let j = i + 1
+              | if (j < len(tokens) && tokens[j]["value"] == "{"):
+                  _pkl_parse_mapping_tok(tokens, j + 1)
+                else:
+                  [j, {}]
+            end
+          else:
+            [i + 1, v]
+        end
+    elif (tok["type"] == "OP" && tok["value"] == "{"):
+      do
+        let r = _pkl_parse_props_tok(tokens, i + 1)
+        | [r[0], r[1]]
+      end
+    else:
+      [i + 1, None]
+end
+
+# Parses property list until } or end of tokens.
+def _pkl_parse_props_tok(tokens, i):
+  let directives = ["amends", "extends", "module", "import", "abstract", "open"]
+  | var obj = {}
+  | var pos = i
+  | var done = false
+  | let _ = while (!done):
+      let tok = if (pos < len(tokens)): tokens[pos] else: {type: "EOF", value: ""}
+      | if (tok["type"] == "EOF" || tok["value"] == "}"):
+          do done = true | obj end
+        elif (tok["type"] == "IDENT"):
+          do
+            let key = tok["value"]
+            | if (in(directives, key)):
+                do
+                  pos += 1
+                  | if (pos < len(tokens) && (tokens[pos]["type"] == "STRING" || tokens[pos]["type"] == "IDENT")):
+                      pos += 1
+                  | obj
+                end
+              else:
+                do
+                  pos += 1
+                  | let next_val = if (pos < len(tokens)): tokens[pos]["value"] else: ""
+                  | if (next_val == ":"):
+                      do
+                        pos += 1
+                        | let _ = while (pos < len(tokens) && tokens[pos]["value"] != "=" && tokens[pos]["value"] != "{"):
+                            pos += 1 | pos
+                          end
+                        | let after = if (pos < len(tokens)): tokens[pos]["value"] else: ""
+                        | if (after == "="):
+                            do
+                              let r = _pkl_parse_value_tok(tokens, pos + 1)
+                              | obj = set(obj, key, r[1])
+                              | pos = r[0]
+                            end
+                          elif (after == "{"):
+                            do
+                              let r = _pkl_parse_props_tok(tokens, pos + 1)
+                              | obj = set(obj, key, r[1])
+                              | pos = r[0]
+                            end
+                          else:
+                            None
+                        | obj
+                      end
+                    elif (next_val == "="):
+                      do
+                        let r = _pkl_parse_value_tok(tokens, pos + 1)
+                        | obj = set(obj, key, r[1])
+                        | pos = r[0]
+                        | obj
+                      end
+                    elif (next_val == "{"):
+                      do
+                        let r = _pkl_parse_props_tok(tokens, pos + 1)
+                        | obj = set(obj, key, r[1])
+                        | pos = r[0]
+                        | obj
+                      end
+                    else:
+                      do pos += 1 | obj end
+                end
+          end
+        else:
+          do pos += 1 | obj end
+    end
+  | [if (pos < len(tokens) && tokens[pos]["value"] == "}"): pos + 1 else: pos, obj]
+end
+
+# === Stringify ===
+
+def _pkl_stringify_value(value, indent):
+  let pad = repeat("  ", indent)
+  | if (is_string(value)):
+      "\"" + _pkl_escape_string(value) + "\""
+    elif (is_number(value)):
+      to_string(value)
+    elif (is_bool(value)):
+      if (value): "true" else: "false"
+    elif (is_none(value)):
+      "null"
+    elif (is_array(value)):
+      "List(" + join(map(value, fn(v): _pkl_stringify_value(v, indent);), ", ") + ")"
+    elif (is_dict(value)):
+      do
+        let ks = keys(value)
+        | if (is_empty(ks)):
+            "{}"
+          else:
+            do
+              let body = join(map(ks, fn(k): pad + "  " + k + " = " + _pkl_stringify_value(value[k], indent + 1);), "\n")
+              | "{\n" + body + "\n" + pad + "}"
+            end
+      end
+    else:
+      to_string(value)
+end
+
+# === Markdown table helpers ===
+
+def _pkl_create_array_table(data):
+  let headers = keys(first(data))
+  | let header_row = "| " + join(headers, " | ") + " |"
+  | let sep_row = "| " + join(map(headers, fn(_): "---";), " | ") + " |"
+  | let data_rows = map(data, fn(row):
+        "| " + join(map(headers, fn(h): if (is_none(row[h])): "" else: replace(to_string(row[h]), "\n", "\\n");), " | ") + " |"
+      end)
+  | [header_row, sep_row] + data_rows
+  | join("\n")
+end
+
+def _pkl_create_dict_table(data):
+  let header_row = "| Key | Value |"
+  | let sep_row = "| --- | --- |"
+  | let data_rows = map(keys(data), fn(k):
+        "| " + k + " | " + (if (is_none(data[k])): "" else: replace(to_string(data[k]), "\n", "\\n")) + " |"
+      end)
+  | [header_row, sep_row] + data_rows
+  | join("\n")
+end
+
+# === Public API ===
+
+# Parses a PKL string and returns the corresponding data structure.
+def pkl_parse(input):
+  let src = _pkl_strip_comments(to_string(input))
+  | let tokens = _pkl_tokenize(src)
+  | _pkl_parse_props_tok(tokens, 0)[1]
+end
+
+# Converts a data structure to a PKL string representation.
+def pkl_stringify(data):
+  if (is_dict(data)):
+    join(map(keys(data), fn(k): k + " = " + _pkl_stringify_value(data[k], 0);), "\n")
+  else:
+    _pkl_stringify_value(data, 0)
+end
+
+# Converts a PKL data structure to a JSON string.
+def pkl_to_json(data):
+  if (is_dict(data)):
+    "{" + join(map(keys(data), fn(k): "\"" + k + "\":" + pkl_to_json(data[k]);), ",") + "}"
+  elif (is_array(data)):
+    "[" + join(map(data, pkl_to_json), ",") + "]"
+  elif (is_string(data)):
+    "\"" + _pkl_escape_string(data) + "\""
+  elif (is_number(data)):
+    to_string(data)
+  elif (is_bool(data)):
+    if (data): "true" else: "false"
+  elif (is_none(data)):
+    "null"
+  else:
+    "\"" + to_string(data) + "\""
+end
+
+# Converts a PKL data structure to a Markdown table.
+def pkl_to_markdown_table(data):
+  if (is_array(data)):
+    _pkl_create_array_table(data)
+  elif (is_dict(data)):
+    _pkl_create_dict_table(data)
+  else:
+    "| Value |\n| --- |\n| " + to_string(data) + " |"
+end

@@ -1,0 +1,408 @@
+include "test"
+| include "pkl"
+|
+
+# === Test inputs ===
+
+let pkl_basic = "name = \"hello\"\nversion = 1\nscore = 3.14\nenabled = true\ndisabled = false\nnothing = null\n"
+| let pkl_comments = "// line comment\nname = \"hello\" // inline comment\n/* block\n   comment */\nvalue = 42\n"
+| let pkl_typed = "name: String = \"world\"\ncount: Int = 10\nflag: Boolean = true\n"
+| let pkl_block = "name = \"app\"\nsettings {\n  timeout = 30\n  debug = false\n  host = \"localhost\"\n}\n"
+| let pkl_nested = "outer {\n  inner {\n    deep = 99\n  }\n  value = 1\n}\n"
+| let pkl_list = "tags = List(\"foo\", \"bar\", \"baz\")\nnums = List(1, 2, 3)\nempty_list = List()\n"
+| let pkl_set = "items = Set(\"a\", \"b\", \"c\")\n"
+| let pkl_mapping = "env = Mapping {\n  [\"HOME\"] = \"/home/user\"\n  [\"PATH\"] = \"/usr/bin\"\n}\n"
+| let pkl_directives = "amends \"pkl:base\"\nmodule MyApp\nimport \"lib.pkl\"\nname = \"app\"\n"
+| let pkl_full = "amends \"pkl:base\"\n\n// Application config\nname = \"my-app\"\nversion: String = \"1.0.0\"\nport = 8080\ndebug = false\n\n/* Database settings */\ndatabase {\n  host = \"localhost\"\n  port = 5432\n  name = \"mydb\"\n}\n\ntags = List(\"production\", \"stable\")\n\nenv = Mapping {\n  [\"LOG_LEVEL\"] = \"info\"\n  [\"MAX_CONN\"] = \"100\"\n}\n" |
+
+# === pkl_parse: primitive types ===
+
+def test_parse_string():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(result["name"], "hello")
+end
+
+def test_parse_integer():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(result["version"], 1)
+end
+
+def test_parse_float():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(result["score"], 3.14)
+end
+
+def test_parse_bool_true():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(result["enabled"], true)
+end
+
+def test_parse_bool_false():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(result["disabled"], false)
+end
+
+def test_parse_null():
+  let result = pkl_parse(pkl_basic)
+  | assert_true(is_none(result["nothing"]))
+end
+
+def test_parse_key_count():
+  let result = pkl_parse(pkl_basic)
+  | assert_eq(len(keys(result)), 6)
+end
+
+def test_parse_negative_number():
+  let result = pkl_parse("offset = -5\n")
+  | assert_eq(result["offset"], -5)
+end
+
+def test_parse_string_with_newline_escape():
+  let result = pkl_parse("msg = \"line1\\nline2\"\n")
+  | assert_eq(result["msg"], "line1\nline2")
+end
+
+def test_parse_string_with_tab_escape():
+  let result = pkl_parse("msg = \"col1\\tcol2\"\n")
+  | assert_eq(result["msg"], "col1\tcol2")
+end
+
+# === pkl_parse: comments ===
+
+def test_parse_line_comment():
+  let result = pkl_parse(pkl_comments)
+  | assert_eq(result["name"], "hello")
+  | assert_eq(result["value"], 42)
+  | assert_eq(len(keys(result)), 2)
+end
+
+def test_parse_block_comment():
+  let result = pkl_parse(pkl_comments)
+  | assert_eq(result["value"], 42)
+end
+
+def test_parse_multiline_block_comment():
+  let result = pkl_parse("/* line1\n   line2\n   line3 */\nkey = \"value\"\n")
+  | assert_eq(result["key"], "value")
+  | assert_eq(len(keys(result)), 1)
+end
+
+def test_parse_only_comments():
+  let result = pkl_parse("// just a comment\n/* another */\n")
+  | assert_eq(len(keys(result)), 0)
+end
+
+# === pkl_parse: type annotations ===
+
+def test_parse_typed_string():
+  let result = pkl_parse(pkl_typed)
+  | assert_eq(result["name"], "world")
+end
+
+def test_parse_typed_int():
+  let result = pkl_parse(pkl_typed)
+  | assert_eq(result["count"], 10)
+end
+
+def test_parse_typed_bool():
+  let result = pkl_parse(pkl_typed)
+  | assert_eq(result["flag"], true)
+end
+
+def test_parse_typed_block():
+  let result = pkl_parse("db: Dynamic {\n  host = \"localhost\"\n  port = 5432\n}\n")
+  | assert_true(is_dict(result["db"]))
+  | assert_eq(result["db"]["host"], "localhost")
+  | assert_eq(result["db"]["port"], 5432)
+end
+
+# === pkl_parse: object blocks ===
+
+def test_parse_object_block():
+  let result = pkl_parse(pkl_block)
+  | assert_eq(result["name"], "app")
+  | assert_true(is_dict(result["settings"]))
+  | assert_eq(result["settings"]["timeout"], 30)
+  | assert_eq(result["settings"]["debug"], false)
+  | assert_eq(result["settings"]["host"], "localhost")
+end
+
+def test_parse_nested_objects():
+  let result = pkl_parse(pkl_nested)
+  | assert_true(is_dict(result["outer"]))
+  | assert_true(is_dict(result["outer"]["inner"]))
+  | assert_eq(result["outer"]["inner"]["deep"], 99)
+  | assert_eq(result["outer"]["value"], 1)
+end
+
+def test_parse_inline_object():
+  let result = pkl_parse("point = { x = 1\n  y = 2\n}\n")
+  | assert_true(is_dict(result["point"]))
+  | assert_eq(result["point"]["x"], 1)
+  | assert_eq(result["point"]["y"], 2)
+end
+
+# === pkl_parse: List and Set ===
+
+def test_parse_list_strings():
+  let result = pkl_parse(pkl_list)
+  | assert_true(is_array(result["tags"]))
+  | assert_eq(len(result["tags"]), 3)
+  | assert_eq(result["tags"][0], "foo")
+  | assert_eq(result["tags"][1], "bar")
+  | assert_eq(result["tags"][2], "baz")
+end
+
+def test_parse_list_numbers():
+  let result = pkl_parse(pkl_list)
+  | assert_eq(result["nums"], [1, 2, 3])
+end
+
+def test_parse_empty_list():
+  let result = pkl_parse(pkl_list)
+  | assert_eq(result["empty_list"], [])
+end
+
+def test_parse_list_bools():
+  let result = pkl_parse("flags = List(true, false, true)\n")
+  | assert_eq(result["flags"], [true, false, true])
+end
+
+def test_parse_list_nulls():
+  let result = pkl_parse("vals = List(null, 1, null)\n")
+  | let v = result["vals"]
+  | assert_eq(len(v), 3)
+  | assert_true(is_none(v[0]))
+  | assert_eq(v[1], 1)
+  | assert_true(is_none(v[2]))
+end
+
+def test_parse_set():
+  let result = pkl_parse(pkl_set)
+  | assert_true(is_array(result["items"]))
+  | assert_eq(len(result["items"]), 3)
+end
+
+# === pkl_parse: Mapping ===
+
+def test_parse_mapping():
+  let result = pkl_parse(pkl_mapping)
+  | assert_true(is_dict(result["env"]))
+  | assert_eq(result["env"]["HOME"], "/home/user")
+  | assert_eq(result["env"]["PATH"], "/usr/bin")
+end
+
+def test_parse_mapping_string_keys():
+  let result = pkl_parse("m = Mapping {\n  [\"key1\"] = 1\n  [\"key2\"] = 2\n}\n")
+  | assert_eq(result["m"]["key1"], 1)
+  | assert_eq(result["m"]["key2"], 2)
+end
+
+# === pkl_parse: module directives ===
+
+def test_parse_skips_amends():
+  let result = pkl_parse(pkl_directives)
+  | assert_eq(result["name"], "app")
+  | assert_true(is_none(result["amends"]))
+end
+
+def test_parse_skips_module():
+  let result = pkl_parse(pkl_directives)
+  | assert_true(is_none(result["module"]))
+end
+
+def test_parse_skips_import():
+  let result = pkl_parse(pkl_directives)
+  | assert_true(is_none(result["import"]))
+end
+
+# === pkl_parse: edge cases ===
+
+def test_parse_empty_string():
+  let result = pkl_parse("")
+  | assert_eq(len(keys(result)), 0)
+end
+
+def test_parse_full_config():
+  let result = pkl_parse(pkl_full)
+  | assert_eq(result["name"], "my-app")
+  | assert_eq(result["version"], "1.0.0")
+  | assert_eq(result["port"], 8080)
+  | assert_eq(result["debug"], false)
+  | assert_eq(result["database"]["host"], "localhost")
+  | assert_eq(result["database"]["port"], 5432)
+  | assert_eq(len(result["tags"]), 2)
+  | assert_eq(result["env"]["LOG_LEVEL"], "info")
+end
+
+# === pkl_stringify ===
+
+def test_stringify_string():
+  let result = pkl_stringify({name: "hello"})
+  | assert_eq(result, "name = \"hello\"")
+end
+
+def test_stringify_number():
+  let result = pkl_stringify({count: 42})
+  | assert_eq(result, "count = 42")
+end
+
+def test_stringify_bool_true():
+  let result = pkl_stringify({enabled: true})
+  | assert_eq(result, "enabled = true")
+end
+
+def test_stringify_bool_false():
+  let result = pkl_stringify({disabled: false})
+  | assert_eq(result, "disabled = false")
+end
+
+def test_stringify_null():
+  let result = pkl_stringify({nothing: None})
+  | assert_eq(result, "nothing = null")
+end
+
+def test_stringify_list():
+  let result = pkl_stringify({tags: ["a", "b"]})
+  | assert_eq(result, "tags = List(\"a\", \"b\")")
+end
+
+def test_stringify_empty_list():
+  let result = pkl_stringify({items: []})
+  | assert_eq(result, "items = List()")
+end
+
+def test_stringify_nested():
+  let result = pkl_stringify({settings: {timeout: 30}})
+  | assert_true(contains(result, "settings = {"))
+  | assert_true(contains(result, "timeout = 30"))
+end
+
+def test_stringify_empty_dict():
+  let result = pkl_stringify({})
+  | assert_eq(result, "")
+end
+
+def test_stringify_escape_backslash():
+  let result = pkl_stringify({path: "C:\\Users"})
+  | assert_eq(result, "path = \"C:\\\\Users\"")
+end
+
+def test_stringify_roundtrip():
+  let data = {name: "app", port: 8080, debug: false}
+  | let serialized = pkl_stringify(data)
+  | let parsed = pkl_parse(serialized)
+  | assert_eq(parsed["name"], "app")
+  | assert_eq(parsed["port"], 8080)
+  | assert_eq(parsed["debug"], false)
+end
+
+# === pkl_to_json ===
+
+def test_to_json_string():
+  let result = pkl_to_json("hello")
+  | assert_eq(result, "\"hello\"")
+end
+
+def test_to_json_number():
+  let result = pkl_to_json(42)
+  | assert_eq(result, "42")
+end
+
+def test_to_json_float():
+  let result = pkl_to_json(3.14)
+  | assert_eq(result, "3.14")
+end
+
+def test_to_json_bool_true():
+  let result = pkl_to_json(true)
+  | assert_eq(result, "true")
+end
+
+def test_to_json_bool_false():
+  let result = pkl_to_json(false)
+  | assert_eq(result, "false")
+end
+
+def test_to_json_null():
+  let result = pkl_to_json(None)
+  | assert_eq(result, "null")
+end
+
+def test_to_json_array():
+  let result = pkl_to_json(["a", "b"])
+  | assert_eq(result, "[\"a\",\"b\"]")
+end
+
+def test_to_json_dict():
+  let result = pkl_to_json({key: "val"})
+  | assert_eq(result, "{\"key\":\"val\"}")
+end
+
+def test_to_json_nested_array():
+  let result = pkl_to_json([[1, 2], [3, 4]])
+  | assert_eq(result, "[[1,2],[3,4]]")
+end
+
+def test_to_json_string_escape():
+  let result = pkl_to_json("line1\nline2")
+  | assert_eq(result, "\"line1\\nline2\"")
+end
+
+def test_to_json_from_parsed_list():
+  let data = pkl_parse(pkl_list)
+  | let result = pkl_to_json(data["tags"])
+  | assert_eq(result, "[\"foo\",\"bar\",\"baz\"]")
+end
+
+def test_to_json_from_parsed_mapping():
+  let data = pkl_parse(pkl_mapping)
+  | let result = pkl_to_json(data["env"])
+  | assert_true(contains(result, "\"HOME\":\"/home/user\""))
+  | assert_true(contains(result, "\"PATH\":\"/usr/bin\""))
+end
+
+def test_to_json_full_config():
+  let data = pkl_parse(pkl_full)
+  | let result = pkl_to_json(data)
+  | assert_true(contains(result, "\"name\":\"my-app\""))
+  | assert_true(contains(result, "\"port\":8080"))
+  | assert_true(contains(result, "\"debug\":false"))
+end
+
+# === pkl_to_markdown_table ===
+
+def test_to_markdown_table_dict():
+  let data = pkl_parse("name = \"Alice\"\nage = 30\n")
+  | let result = pkl_to_markdown_table(data)
+  | assert_true(contains(result, "| Key | Value |"))
+  | assert_true(contains(result, "| --- | --- |"))
+  | assert_true(contains(result, "| name | Alice |"))
+  | assert_true(contains(result, "| age | 30 |"))
+end
+
+def test_to_markdown_table_array_of_dicts():
+  let data = [{name: "Alice", age: 30}, {name: "Bob", age: 25}]
+  | let result = pkl_to_markdown_table(data)
+  | assert_true(contains(result, "| name | age |"))
+  | assert_true(contains(result, "| Alice | 30 |"))
+  | assert_true(contains(result, "| Bob | 25 |"))
+end
+
+def test_to_markdown_table_scalar_number():
+  let result = pkl_to_markdown_table(42)
+  | assert_eq(result, "| Value |\n| --- |\n| 42 |")
+end
+
+def test_to_markdown_table_scalar_string():
+  let result = pkl_to_markdown_table("hello")
+  | assert_eq(result, "| Value |\n| --- |\n| hello |")
+end
+
+def test_to_markdown_table_has_separator_row():
+  let data = pkl_parse("name = \"app\"\nport = 8080\n")
+  | let result = pkl_to_markdown_table(data)
+  | let rows = split(result, "\n")
+  | assert_true(len(rows) >= 2)
+  | assert_true(contains(rows[1], "---"))
+end
