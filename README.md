@@ -22,6 +22,20 @@ Copy `pkl.mq` to your mq module directory, or place it anywhere and reference it
 cp pkl.mq ~/.local/mq/config/
 ```
 
+### HTTP Import (no local installation needed)
+
+If `mq` was built with the `http-import` feature, you can import directly from GitHub without any local setup:
+
+```sh
+mq -I raw 'import "github.com/harehare/pkl.mq" | pkl::pkl_parse(.)' config.pkl
+```
+
+Pin to a specific release with `@vX.Y.Z`:
+
+```sh
+mq -I raw 'import "github.com/harehare/pkl.mq@v0.1.0" | pkl::pkl_parse(.)' config.pkl
+```
+
 ## Usage
 
 ```sh
